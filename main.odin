@@ -23,20 +23,15 @@ TokenType :: enum {
 
 Token :: struct {
     type: TokenType,
-    data: [dynamic]rune,
+    data: string,
 }
 
-Lexer :: struct {
-    // lexer variables
-    input: []rune,
-    storage: [dynamic]rune,
-
-    // lexer parse location for error messages
-    where_firstchar,
-    where_lastchar: int,
-
-    // lexer token variables
+Tokenizer :: struct {
+    src: string,
+    offset: int,
+    read_offset: int,
     token: Token,
+    ch: rune,
 }
 
 main :: proc() {
@@ -61,68 +56,85 @@ main :: proc() {
     assert(ok, "Could not open input file")
     defer delete(input_file)
 
-    input := utf8.string_to_runes(string(input_file))
-    defer delete(input)
-
-
-
-    lexer : Lexer
-    defer delete(lexer.storage)
-    lex_init(&lexer, &input)
+    t : Tokenizer
+    lex_init(&t, string(input_file))
     for i in 0..<10 {
-        lex_once(&lexer)
-        fmt.printfln("type: %v | data: %v", lexer.token.type, lexer.token.data[1:])
+        lex_once(&t)
+        fmt.printfln("type: %v | offset: %c | read_offset: %c | ch: %c | data: %v",
+            t.token.type, t.src[t.offset], t.src[t.read_offset], t.ch, t.token.data)
     }
 }
 
-lex_init :: proc(lexer: ^Lexer, input: ^[]rune) {
-    lexer.input = input^
+lex_init :: proc(tok: ^Tokenizer, input: string) {
+    tok.src = input
 }
 
-lex_once :: proc(lexer: ^Lexer) {
-    token := &lexer.storage[len(lexer.storage)-1]
-    p := lexer.input
-
+lex_once :: proc(t: ^Tokenizer) {
     for {
-        if len(p) == 0 { return } // there was no valid text until EOF
-        if !u.is_space(p[0]) {
-            if len(p) >= 2 {
-                if p[0] == '/' && p[1] == '/' {
+        if !u.is_space(t.ch) {
+            if t.offset < len(t.src)-2 {
+                if peek_byte(t,0) == '/' && peek_byte(t,1) == '/' {
                     panic("TODO: implement single-line comment skip")
-                } else if p[0] == '/' && p[1] == '*' {
+                } else if peek_byte(t,0) == '/' && peek_byte(t,1) == '*' {
                     panic("TODO: implement multi-line comment skip")
                 } else { break }
             }
             break
         }
-        p = p[1:]
+        advance_rune(t)
+        if t.ch == -1 { return } // there was no valid text until EOF
     }
 
-    if len(p) == 0 { return } // there was no valid text until EOF
-
+    offset := t.offset
     switch {
-    case u.is_letter(p[0]) || p[0] != '_': { // identifier ::= [_a-zA-Z][_a-zA-Z0-9]*
-        sb := ""
-        defer strings.builder_destroy(&sb)
+    case u.is_letter(t.ch) || t.ch == '_': { // identifier ::= [_a-zA-Z][_a-zA-Z0-9]*
         for {
-            if len(p) == 0 || !u.is_letter(p[0]) && !u.is_digit(p[0]) && p[0] != '_' { break }
-            strings.write_rune(&sb, p[0])
-            p = p[1:]
+            if t.ch == -1 || t.read_offset > len(t.src) || !u.is_letter(t.ch) && !u.is_digit(t.ch) && t.ch != '_' { break }
+            advance_rune(t)
         }
-        token.type = .ident
-        data_str := strings.to_string(sb)
-        for r in data_str {
-            append(&token.data, r)
-        }
+        t.token.type = .ident
+        t.token.data = t.src[offset : t.read_offset]
+        // fmt.println("\nTOKEN:", t.token, "\n")
     }
-    case u.is_digit(p[0]): { }  // number literal
+    case u.is_digit(t.ch): {
+        advance_rune(t)
+    } // number literal
     case: {
-        token.type = .ascii
-        append(&token.data, p[0])
+        advance_rune(t)
+        t.token.type = .ascii
+        t.token.data = t.src[offset:][:1]
     }
     }
-
-    lexer.input = p[1:]
 
     return
+}
+
+advance_rune :: proc(t: ^Tokenizer) {
+    if t.read_offset < len(t.src) {
+        t.offset = t.read_offset
+        r, w := rune(t.src[t.read_offset]), 1
+        switch {
+        case r == 0:
+            panic("Illegal character NUL")
+        case r >= utf8.RUNE_SELF:
+            r, w = utf8.decode_rune_in_string(t.src[t.read_offset:])
+            if r == utf8.RUNE_ERROR && w == 1 {
+                panic("Illegal UTF-8 encoding")
+            } else if r == utf8.RUNE_BOM && t.offset > 0 {
+                panic("Illegal byte order mark")
+            }
+        }
+        t.read_offset += w
+        t.ch = r
+    } else {
+        t.offset = len(t.src)
+        t.ch = -1
+    }
+}
+
+peek_byte :: proc(t: ^Tokenizer, offset := 0) -> byte {
+    if t.read_offset+offset < len(t.src) {
+        return t.src[t.read_offset+offset]
+    }
+    return 0
 }
