@@ -8,17 +8,11 @@ import "core:unicode/utf8"
 import u "core:unicode"
 
 TokenType :: enum {
-    ascii,
-    error = 256,
-    eof,
-    ident, // is [_a-zA-Z][_a-zA-Z0-9]*
-    number,
-    string,
-    // lit_int,       // is [0-9]+  |  0x[0-9a-fA-F]+  |  0o[0-7]+  |  0b[0-1]+
-    // lit_float,     // is [0-9]*(.[0-9]*([eE][-+]?[0-9]+)?)
-    // lit_dq_string, // is "string"
-    // lit_sq_string, // is 'string'
-    // lit_bq_string, // is `string`
+    error,
+    symbol,
+    text,   //       ::= [_a-zA-Z][_a-zA-Z0-9]*
+    number, // int   ::= [0-9][_0-9]*  |  0x[0-9a-fA-F][_0-9a-fA-F]*  |  0o[0-7][_0-7]*  |  0b[0-1][_0-1]*
+            // float ::= [0-9]*(.[0-9]*([eE][-+]?[0-9]+)?)
 }
 
 Token :: struct {
@@ -30,8 +24,8 @@ Tokenizer :: struct {
     src: string,
     offset: int,
     read_offset: int,
-    token: Token,
     ch: rune,
+    token: Token,
 }
 
 main :: proc() {
@@ -52,24 +46,37 @@ main :: proc() {
     defer free_all(context.temp_allocator)
     // }}}
 
-    input_file, ok := os.read_entire_file_from_filename("test.c")
+    input_file, ok := os.read_entire_file_from_filename("main.odin")
     assert(ok, "Could not open input file")
     defer delete(input_file)
 
     t : Tokenizer
-    lex_init(&t, string(input_file))
-    for i in 0..<10 {
-        lex_once(&t)
-        fmt.printfln("type: %v | offset: %c | read_offset: %c | ch: %c | data: %v",
-            t.token.type, t.src[t.offset], t.src[t.read_offset], t.ch, t.token.data)
+    tokenizer_init(&t, string(input_file))
+
+    storage: [dynamic]Token
+    defer delete(storage)
+
+    tokenize(&t, &storage)
+
+    for i in 0..<30 {
+        t := storage[i]
+        fmt.printf("%v\t%s\n", t.type, t.data)
     }
 }
 
-lex_init :: proc(tok: ^Tokenizer, input: string) {
+tokenizer_init :: proc(tok: ^Tokenizer, input: string) {
     tok.src = input
 }
 
-lex_once :: proc(t: ^Tokenizer) {
+tokenize :: proc(t: ^Tokenizer, storage: ^[dynamic]Token) {
+    for t.read_offset < len(t.src) {
+        tokenize_once(t)
+        append(storage, t.token)
+    }
+}
+
+tokenize_once :: proc(t: ^Tokenizer) {
+    advance_rune(t)
     for {
         if !u.is_space(t.ch) {
             if t.offset < len(t.src)-2 {
@@ -87,21 +94,32 @@ lex_once :: proc(t: ^Tokenizer) {
 
     offset := t.offset
     switch {
-    case u.is_letter(t.ch) || t.ch == '_': { // identifier ::= [_a-zA-Z][_a-zA-Z0-9]*
+    case u.is_letter(t.ch) || t.ch == '_': {
         for {
-            if t.ch == -1 || t.read_offset > len(t.src) || !u.is_letter(t.ch) && !u.is_digit(t.ch) && t.ch != '_' { break }
+            peek_ch := peek_rune(t)
+            if peek_ch == -1 || t.read_offset > len(t.src) ||
+            !u.is_letter(peek_ch) && !u.is_digit(peek_ch) && peek_ch != '_' {
+                break
+            }
             advance_rune(t)
         }
-        t.token.type = .ident
+        t.token.type = .text
         t.token.data = t.src[offset : t.read_offset]
-        // fmt.println("\nTOKEN:", t.token, "\n")
     }
     case u.is_digit(t.ch): {
-        advance_rune(t)
+        for {
+            peek_ch := peek_rune(t)
+            if peek_ch == -1 || t.read_offset > len(t.src) ||
+            !u.is_digit(peek_ch) && peek_ch != '_' {
+                break
+            }
+            advance_rune(t)
+        }
+        t.token.type = .number
+        t.token.data = t.src[offset : t.read_offset]
     } // number literal
     case: {
-        advance_rune(t)
-        t.token.type = .ascii
+        t.token.type = .symbol
         t.token.data = t.src[offset:][:1]
     }
     }
@@ -129,6 +147,26 @@ advance_rune :: proc(t: ^Tokenizer) {
     } else {
         t.offset = len(t.src)
         t.ch = -1
+    }
+}
+
+peek_rune :: proc(t: ^Tokenizer, offset := 0) -> rune {
+    if t.read_offset < len(t.src) {
+        r, w := rune(t.src[t.read_offset]), 1
+        switch {
+        case r == 0:
+            panic("Illegal character NUL")
+        case r >= utf8.RUNE_SELF:
+            r, w = utf8.decode_rune_in_string(t.src[t.read_offset:])
+            if r == utf8.RUNE_ERROR && w == 1 {
+                panic("Illegal UTF-8 encoding")
+            } else if r == utf8.RUNE_BOM && t.offset > 0 {
+                panic("Illegal byte order mark")
+            }
+        }
+        return r
+    } else {
+        return -1
     }
 }
 
