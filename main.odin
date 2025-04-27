@@ -15,9 +15,20 @@ TokenType :: enum {
             // float ::= [0-9]*(.[0-9]*([eE][-+]?[0-9]+)?)
 }
 
+TokenFlag :: enum {
+    number_int_dec,
+    number_int_hex,
+    number_int_oct,
+    number_int_bin,
+    number_float,
+    newline_after,
+    newline_before,
+}
+
 Token :: struct {
     type: TokenType,
     data: string,
+    flag: bit_set[TokenFlag],
 }
 
 Tokenizer :: struct {
@@ -46,8 +57,8 @@ main :: proc() {
     defer free_all(context.temp_allocator)
     // }}}
 
-    input_file, ok := os.read_entire_file_from_filename("main.odin")
-    assert(ok, "Could not open input file")
+    input_file, ok := os.read_entire_file_from_filename("test.c")
+    assert(ok, "\nCould not open input file")
     defer delete(input_file)
 
     t : Tokenizer
@@ -60,13 +71,11 @@ main :: proc() {
 
     for i in 0..<30 {
         t := storage[i]
-        fmt.printf("%v\t%s\n", t.type, t.data)
+        fmt.printf("%v\t%v\t%v\n", t.type, t.data, t.flag)
     }
 }
 
-tokenizer_init :: proc(tok: ^Tokenizer, input: string) {
-    tok.src = input
-}
+tokenizer_init :: proc(tok: ^Tokenizer, input: string) { tok.src = input }
 
 tokenize :: proc(t: ^Tokenizer, storage: ^[dynamic]Token) {
     for t.read_offset < len(t.src) {
@@ -103,9 +112,16 @@ tokenize_once :: proc(t: ^Tokenizer) {
             }
             advance_rune(t)
         }
+
         t.token.type = .text
         t.token.data = t.src[offset : t.read_offset]
+        before, after := check_newline(t)
+        t.token.flag = {}
+        if before { t.token.flag += { .newline_before } }
+        if after { t.token.flag += { .newline_after } }
     }
+    // int   ::= [0-9][_0-9]*  |  0x[0-9a-fA-F][_0-9a-fA-F]*  |  0o[0-7][_0-7]*  |  0b[0-1][_0-1]*
+    // float ::= [0-9]*(\.[0-9]*([eE][-+]?[0-9]+)?)
     case u.is_digit(t.ch): {
         for {
             peek_ch := peek_rune(t)
@@ -117,11 +133,33 @@ tokenize_once :: proc(t: ^Tokenizer) {
         }
         t.token.type = .number
         t.token.data = t.src[offset : t.read_offset]
-    } // number literal
+        before, after := check_newline(t)
+        t.token.flag = { .number_int_dec }
+        if before { t.token.flag += { .newline_before } }
+        if after { t.token.flag += { .newline_after } }
+    }
+    case t.ch == '.' && u.is_digit(peek_rune(t)): { fallthrough }
     case: {
         t.token.type = .symbol
         t.token.data = t.src[offset:][:1]
+        before, after := check_newline(t)
+        t.token.flag = {}
+        if before { t.token.flag += { .newline_before } }
+        if after { t.token.flag += { .newline_after } }
     }
+    }
+
+    return
+}
+
+check_newline :: proc(t: ^Tokenizer) -> (before: bool, after: bool) {
+    if .newline_after in t.token.flag {
+        before = true
+    }
+
+    if peek_rune(t) == '\n' ||
+       peek_rune(t) == '\r' && peek_rune(t, 1) == '\n' {
+        after = true
     }
 
     return
@@ -151,13 +189,13 @@ advance_rune :: proc(t: ^Tokenizer) {
 }
 
 peek_rune :: proc(t: ^Tokenizer, offset := 0) -> rune {
-    if t.read_offset < len(t.src) {
-        r, w := rune(t.src[t.read_offset]), 1
+    if t.read_offset+offset < len(t.src) {
+        r, w := rune(t.src[t.read_offset+offset]), 1
         switch {
         case r == 0:
             panic("Illegal character NUL")
         case r >= utf8.RUNE_SELF:
-            r, w = utf8.decode_rune_in_string(t.src[t.read_offset:])
+            r, w = utf8.decode_rune_in_string(t.src[t.read_offset+offset:])
             if r == utf8.RUNE_ERROR && w == 1 {
                 panic("Illegal UTF-8 encoding")
             } else if r == utf8.RUNE_BOM && t.offset > 0 {

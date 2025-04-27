@@ -1,9 +1,9 @@
 #include <stdio.h>
 
 int main() {
-    int а = 34;
-    int б = 35;
-    int в = а + б;
-    printf("%d + %d = %d\n", а, б, в);
+    int a = 34;
+    int b = 35;
+    int c = a + b;
+    printf("%d + %d = %d\n", a, b, c);
     return 0;
 }
